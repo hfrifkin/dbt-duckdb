@@ -14,6 +14,7 @@ from dbt_common.exceptions import DbtRuntimeError
 
 from .constants import DEFAULT_TEMP_SCHEMA_NAME
 from .constants import TEMP_SCHEMA_NAME
+from .constants import CONCURRENCY_LEVEL
 from dbt.adapters.base import BaseRelation
 from dbt.adapters.base.column import Column as BaseColumn
 from dbt.adapters.base.impl import ConstraintSupport
@@ -52,6 +53,9 @@ class DuckDBAdapter(SQLAdapter):
     # can be overridden via the model config metadata
     _temp_schema_name = DEFAULT_TEMP_SCHEMA_NAME
     _temp_schema_model_uuid: dict[str, str] = defaultdict(lambda: str(uuid4()).split("-")[-1])
+    
+    # Track original thread count for concurrency control
+    _original_threads = None
 
     @classmethod
     def date_function(cls) -> str:
@@ -279,16 +283,39 @@ class DuckDBAdapter(SQLAdapter):
                 )
                 self.drop_relation(temp_relation)
 
+    def _set_concurrency_level(self, config: Any) -> None:
+        """Set concurrency level based on model config."""
+        if hasattr(config, "model") and hasattr(config.model, "config"):
+            concurrency_level = config.model.config.meta.get(CONCURRENCY_LEVEL)
+            if concurrency_level == 1:
+                # Store original thread count if not already stored
+                if self._original_threads is None:
+                    # Access threads from the profile configuration
+                    self._original_threads = getattr(self.config, 'threads', 4)
+                
+                # Set threads to 1 for this model
+                setattr(self.config, 'threads', 1)
+                logger.info(f"Setting concurrency level to 1 for model {config.model.name}")
+
+    def _restore_concurrency_level(self) -> None:
+        """Restore original thread count after model execution."""
+        if self._original_threads is not None:
+            setattr(self.config, 'threads', self._original_threads)
+            self._original_threads = None
+            logger.info("Restored original thread count")
+
     def pre_model_hook(self, config: Any) -> None:
         """A hook for getting the temp schema name from the model config.
         Cleans up the remote temporary table on MotherDuck before running
         an incremental model.
+        Also handles concurrency level settings.
         """
         if hasattr(config, "model"):
             self._temp_schema_name = config.model.config.meta.get(
                 TEMP_SCHEMA_NAME, self._temp_schema_name
             )
             self._clean_up_temp_relation_for_incremental(config)
+            self._set_concurrency_level(config)
         super().pre_model_hook(config)
 
     @available
@@ -310,6 +337,7 @@ class DuckDBAdapter(SQLAdapter):
         incremental model materialization fails to do so.
         """
         self._clean_up_temp_relation_for_incremental(config)
+        self._restore_concurrency_level()
         super().post_model_hook(config, context)
 
 

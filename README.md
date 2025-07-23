@@ -417,6 +417,28 @@ relative to the current working directory, but you can change the default direct
 
 dbt-duckdb supports the `delete+insert` and `append` strategies for incremental `table` models, but unfortunately it does not yet support incremental materialization strategies for `external` models.
 
+#### Model-Level Concurrency Control
+
+dbt-duckdb supports setting concurrency level to 1 for specific models using the `concurrency_level` flag in the model's `meta` configuration. This is useful for models that need to run in single-threaded mode to avoid conflicts or ensure deterministic execution order.
+
+To set a model to run with concurrency level 1, add the following to your model:
+
+```sql
+{{ config(
+    materialized='table',
+    meta={'concurrency_level': 1}
+) }}
+
+SELECT * FROM {{ ref('upstream_model') }}
+```
+
+This configuration will:
+- Temporarily override the profile's `threads` setting to 1 for this specific model
+- Restore the original thread count after the model completes
+- Work with any materialization type (table, view, incremental, external, etc.)
+
+**Note:** Only `concurrency_level: 1` is currently supported. Other values will be ignored and the model will run with the profile's default thread count.
+
 #### Re-running external models with an in-memory version of dbt-duckdb
 When using `:memory:` as the DuckDB database, subsequent dbt runs can fail when selecting a subset of models that depend on external tables. This is because external files are only registered as  DuckDB views when they are created, not when they are referenced. To overcome this issue we have provided the `register_upstream_external_models` macro that can be triggered at the beginning of a run. To enable this automatic registration, place the following in your `dbt_project.yml` file:
 
